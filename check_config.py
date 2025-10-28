@@ -90,73 +90,107 @@ def check_vk_token():
         return False
 
 
-def check_vk_group():
-    """Проверка доступности группы VK"""
-    print(f"\n{BOLD}3. Проверка группы VK{RESET}")
+def check_vk_owner():
+    """Проверка доступности группы или страницы VK"""
+    print(f"\n{BOLD}3. Проверка группы/страницы VK{RESET}")
     
     token = os.getenv('VK_ACCESS_TOKEN')
-    group_input = os.getenv('VK_GROUP_ID')
+    owner_input = os.getenv('VK_GROUP_ID')
     
-    if not token or not group_input:
-        print_status("VK токен или Group ID не найдены", 'ERROR')
+    if not token or not owner_input:
+        print_status("VK токен или VK_GROUP_ID не найдены", 'ERROR')
         return False
     
-    # Простая проверка: если это число, то это ID
-    if group_input.isdigit():
-        group_id = int(group_input)
-        screen_name = None
-    else:
-        # Пробуем разрешить через API
-        try:
-            response = requests.get(
-                'https://api.vk.com/method/utils.resolveScreenName',
-                params={
-                    'access_token': token,
-                    'screen_name': group_input.replace('https://vk.com/', '').replace('club', '').replace('public', ''),
-                    'v': '5.131'
-                },
-                timeout=10
-            )
-            data = response.json()
-            
-            if 'error' in data or not data.get('response'):
-                print_status(f"Не удалось разрешить группу: {group_input}", 'ERROR')
-                return False
-            
-            group_id = data['response'].get('object_id')
-            screen_name = group_input
-        except Exception as e:
-            print_status(f"Ошибка при разрешении группы: {e}", 'ERROR')
-            return False
+    owner_id = None
+    owner_type = None
     
-    # Получаем информацию о группе
+    # Очищаем входные данные
+    clean_input = owner_input.replace('https://vk.com/', '').replace('club', '').replace('public', '').replace('id', '')
+    
+    # Простая проверка: если это число, пробуем определить тип через API
+    if clean_input.isdigit():
+        owner_id = int(clean_input)
+        # Нужно определить тип через resolveScreenName если это screen_name
+    
+    # Пробуем разрешить через API
     try:
         response = requests.get(
-            'https://api.vk.com/method/groups.getById',
+            'https://api.vk.com/method/utils.resolveScreenName',
             params={
                 'access_token': token,
-                'group_id': group_id,
+                'screen_name': owner_input.replace('https://vk.com/', '').replace('-', ''),
                 'v': '5.131'
             },
             timeout=10
         )
         data = response.json()
         
-        if 'error' in data:
-            print_status(f"Ошибка получения информации о группе: {data['error'].get('error_msg')}", 'ERROR')
+        if 'error' not in data and data.get('response'):
+            owner_type = data['response'].get('type')  # 'user' или 'group'
+            obj_id = data['response'].get('object_id')
+            
+            if owner_type == 'user':
+                owner_id = obj_id
+            elif owner_type == 'group':
+                owner_id = -obj_id
+        elif not owner_id:
+            print_status(f"Не удалось разрешить владельца: {owner_input}", 'ERROR')
             return False
-        
-        group_info = data['response'][0] if data.get('response') else {}
-        group_name = group_info.get('name', 'Unknown')
-        
-        print_status(f"Группа найдена: {group_name} (ID: {group_id})", 'OK')
+    except Exception as e:
+        print_status(f"Ошибка при разрешении владельца: {e}", 'ERROR')
+        return False
+    
+    # Получаем информацию о владельце
+    try:
+        if owner_type == 'user' or (owner_id and owner_id > 0):
+            # Это пользователь
+            response = requests.get(
+                'https://api.vk.com/method/users.get',
+                params={
+                    'access_token': token,
+                    'user_ids': abs(owner_id),
+                    'v': '5.131'
+                },
+                timeout=10
+            )
+            data = response.json()
+            
+            if 'error' in data:
+                print_status(f"Ошибка получения информации о пользователе: {data['error'].get('error_msg')}", 'ERROR')
+                return False
+            
+            user_info = data['response'][0] if data.get('response') else {}
+            owner_name = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}"
+            
+            print_status(f"Пользователь найден: {owner_name} (ID: {owner_id})", 'OK')
+        else:
+            # Это группа
+            response = requests.get(
+                'https://api.vk.com/method/groups.getById',
+                params={
+                    'access_token': token,
+                    'group_id': abs(owner_id),
+                    'v': '5.131'
+                },
+                timeout=10
+            )
+            data = response.json()
+            
+            if 'error' in data:
+                print_status(f"Ошибка получения информации о группе: {data['error'].get('error_msg')}", 'ERROR')
+                return False
+            
+            group_info = data['response'][0] if data.get('response') else {}
+            owner_name = group_info.get('name', 'Unknown')
+            
+            print_status(f"Группа найдена: {owner_name} (ID: {owner_id})", 'OK')
         
         # Проверяем доступ к стене
         response = requests.get(
             'https://api.vk.com/method/wall.get',
             params={
                 'access_token': token,
-                'owner_id': -abs(group_id),
+                'owner_id': owner_id,
                 'count': 1,
                 'v': '5.131'
             },
@@ -165,15 +199,15 @@ def check_vk_group():
         data = response.json()
         
         if 'error' in data:
-            print_status(f"Нет доступа к стене группы: {data['error'].get('error_msg')}", 'ERROR')
+            print_status(f"Нет доступа к стене: {data['error'].get('error_msg')}", 'ERROR')
             return False
         
-        print_status("Доступ к стене группы есть", 'OK')
+        print_status("Доступ к стене есть", 'OK')
         
         return True
     
     except Exception as e:
-        print_status(f"Ошибка проверки группы: {e}", 'ERROR')
+        print_status(f"Ошибка проверки владельца: {e}", 'ERROR')
         return False
 
 
@@ -251,7 +285,7 @@ def main():
     # Запускаем проверки
     results.append(('Переменные окружения', check_env_variables()))
     results.append(('VK токен', check_vk_token()))
-    results.append(('VK группа', check_vk_group()))
+    results.append(('VK группа/страница', check_vk_owner()))
     results.append(('Telegram бот', check_telegram_bot()))
     
     # Итоговый результат

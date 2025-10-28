@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-VK Comment Monitor - мониторинг комментариев в публичных группах ВКонтакте
+VK Comment Monitor - мониторинг комментариев в публичных группах и на страницах ВКонтакте
 Отправка уведомлений о новых комментариях в Telegram
+Поддерживает: группы (сообщества) и личные страницы пользователей
 """
 
 import os
@@ -84,77 +85,102 @@ def vk_api_call(method: str, params: Dict[str, Any]) -> Optional[Dict]:
         return None
 
 
-def resolve_vk_group(group_input: str) -> Optional[int]:
+def resolve_vk_owner(owner_input: str) -> tuple:
     """
-    Преобразует любой формат идентификатора группы в числовой ID
+    Преобразует любой формат идентификатора в (owner_id, owner_type, screen_name)
     
     Поддерживаемые форматы:
-    - Числовой ID: 12345678
-    - С префиксами: club12345678, public12345678, -12345678
-    - Screen name: parfenchikov_karelia
-    - Полная ссылка: https://vk.com/parfenchikov_karelia
+    - Для групп: 12345678, club12345678, -12345678, parfenchikov_karelia
+    - Для пользователей: id12345678, aparfenchikov, durov
+    - Полные ссылки: https://vk.com/aparfenchikov, https://vk.com/parfenchikov_karelia
     
     Returns:
-        Положительный числовой ID группы или None при ошибке
+        tuple: (owner_id, owner_type, screen_name)
+        owner_id: положительный для пользователей, отрицательный для групп
+        owner_type: 'user' или 'group'
+        screen_name: исходное имя для логов
     """
-    group_input = group_input.strip()
+    owner_input = owner_input.strip()
+    original_input = owner_input
     
-    # Убираем знак минус, если есть
-    if group_input.startswith('-'):
-        group_input = group_input[1:]
+    # Убираем знак минус, если есть (признак группы)
+    if owner_input.startswith('-'):
+        owner_input = owner_input[1:]
+        is_group = True
+    else:
+        is_group = False
     
-    # Проверяем префиксы club/public
-    if group_input.startswith('club') or group_input.startswith('public'):
-        match = re.match(r'(club|public)(\d+)', group_input)
+    # Проверяем префикс id (пользователь)
+    if owner_input.startswith('id'):
+        match = re.match(r'id(\d+)', owner_input)
         if match:
-            return int(match.group(2))
+            user_id = int(match.group(1))
+            log(f"Detected user ID: {user_id}")
+            return (user_id, 'user', original_input)
+    
+    # Проверяем префиксы club/public (группа)
+    if owner_input.startswith('club') or owner_input.startswith('public'):
+        match = re.match(r'(club|public)(\d+)', owner_input)
+        if match:
+            group_id = int(match.group(2))
+            log(f"Detected group ID: {group_id}")
+            return (-group_id, 'group', original_input)
     
     # Если это чистое число
-    if group_input.isdigit():
-        return int(group_input)
+    if owner_input.isdigit():
+        num_id = int(owner_input)
+        if is_group:
+            log(f"Detected group ID from negative number: {num_id}")
+            return (-num_id, 'group', original_input)
+        # Числа без префикса требуют проверки через API
+        owner_input = str(num_id)
     
     # Извлекаем screen_name из URL
-    url_match = re.match(r'https?://vk\.com/([a-zA-Z0-9_]+)', group_input)
+    url_match = re.match(r'https?://vk\.com/([a-zA-Z0-9_]+)', owner_input)
     if url_match:
-        group_input = url_match.group(1)
+        owner_input = url_match.group(1)
     
-    # Используем utils.resolveScreenName для получения ID
-    log(f"Resolving screen name: {group_input}")
-    response = vk_api_call('utils.resolveScreenName', {'screen_name': group_input})
+    # Используем utils.resolveScreenName для получения ID и типа
+    log(f"Resolving screen name: {owner_input}")
+    response = vk_api_call('utils.resolveScreenName', {'screen_name': owner_input})
     
-    if response and response.get('type') == 'group':
-        group_id = response.get('object_id')
-        log(f"Resolved to group ID: {group_id}")
-        return group_id
+    if response:
+        obj_type = response.get('type')
+        obj_id = response.get('object_id')
+        
+        if obj_type == 'user':
+            log(f"Resolved to user ID: {obj_id}")
+            return (obj_id, 'user', owner_input)
+        elif obj_type == 'group':
+            log(f"Resolved to group ID: {obj_id}")
+            return (-obj_id, 'group', owner_input)
     
-    log(f"Failed to resolve group: {group_input}", 'ERROR')
-    return None
+    log(f"Failed to resolve owner: {original_input}", 'ERROR')
+    return (None, None, None)
 
 
-def get_wall_posts(group_id: int, count: int = 10) -> List[Dict]:
+def get_wall_posts(owner_id: int, count: int = 10) -> List[Dict]:
     """
-    Получает последние посты со стены группы
+    Получает последние посты со стены
     
     Args:
-        group_id: ID группы (положительное число)
+        owner_id: ID владельца стены (положительный для пользователей, отрицательный для групп)
         count: Количество постов для получения
     
     Returns:
         Список постов
     """
-    owner_id = -abs(group_id)  # Для групп используется отрицательный ID
-    
     response = vk_api_call('wall.get', {
         'owner_id': owner_id,
         'count': count,
-        'filter': 'owner'  # Только посты от имени сообщества
+        'filter': 'owner'  # Только посты от владельца
     })
     
     if not response:
         return []
     
     posts = response.get('items', [])
-    log(f"Fetched {len(posts)} posts from group {group_id}")
+    log(f"Fetched {len(posts)} posts from owner {owner_id}")
     
     return posts
 
@@ -164,7 +190,7 @@ def get_post_comments(owner_id: int, post_id: int, count: int = 20) -> List[Dict
     Получает комментарии к посту
     
     Args:
-        owner_id: ID владельца стены (отрицательный для групп)
+        owner_id: ID владельца стены (положительный для пользователей, отрицательный для групп)
         post_id: ID поста
         count: Количество комментариев для получения
     
@@ -202,14 +228,14 @@ def get_post_comments(owner_id: int, post_id: int, count: int = 20) -> List[Dict
     return comments
 
 
-def format_telegram_message(comment: Dict, post_url: str, group_name: str) -> str:
+def format_telegram_message(comment: Dict, post_url: str, owner_name: str) -> str:
     """
     Форматирует комментарий для отправки в Telegram
     
     Args:
         comment: Объект комментария из VK API
         post_url: Ссылка на пост
-        group_name: Название группы
+        owner_name: Название группы или имя владельца страницы
     
     Returns:
         Отформатированное сообщение с HTML-разметкой
@@ -242,7 +268,7 @@ def format_telegram_message(comment: Dict, post_url: str, group_name: str) -> st
     comment_url = f"https://vk.com/wall{owner_id}_{post_id}?reply={comment_id}"
     
     # Формируем сообщение
-    message = f"""💬 <b>Новый комментарий в {group_name}</b>
+    message = f"""💬 <b>Новый комментарий на странице {owner_name}</b>
 
 📄 <b>Пост:</b> <a href="{post_url}">перейти к посту</a>
 👤 <b>Автор:</b> <a href="{author_url}">{author_name}</a>
@@ -299,40 +325,55 @@ def send_telegram_message(message: str, retry_count: int = 3) -> bool:
     return False
 
 
-def get_group_info(group_id: int) -> Dict:
+def get_owner_info(owner_id: int, owner_type: str) -> Dict:
     """
-    Получает информацию о группе
+    Получает информацию о владельце стены
     
     Args:
-        group_id: ID группы
+        owner_id: ID владельца (положительный для пользователей, отрицательный для групп)
+        owner_type: 'user' или 'group'
     
     Returns:
-        Словарь с информацией о группе
+        Словарь с информацией о владельце
     """
-    response = vk_api_call('groups.getById', {
-        'group_id': group_id
-    })
+    if owner_type == 'user':
+        response = vk_api_call('users.get', {
+            'user_ids': owner_id,
+            'fields': 'screen_name'
+        })
+        
+        if response and len(response) > 0:
+            user = response[0]
+            return {
+                'name': f"{user.get('first_name', '')} {user.get('last_name', '')}",
+                'id': owner_id,
+                'screen_name': user.get('screen_name', '')
+            }
+    else:  # group
+        response = vk_api_call('groups.getById', {
+            'group_id': abs(owner_id)
+        })
+        
+        if response and len(response) > 0:
+            group = response[0]
+            group['id'] = owner_id  # Сохраняем отрицательный ID
+            return group
     
-    if response and len(response) > 0:
-        return response[0]
-    
-    return {'name': 'Unknown Group'}
+    return {'name': 'Unknown Owner', 'id': owner_id}
 
 
-def process_comments(group_id: int, group_name: str):
+def process_comments(owner_id: int, owner_name: str):
     """
     Основная функция обработки комментариев
     
     Args:
-        group_id: ID группы для мониторинга
-        group_name: Название группы
+        owner_id: ID владельца для мониторинга (положительный для пользователей, отрицательный для групп)
+        owner_name: Название группы или имя пользователя
     """
     global is_first_run, seen_comments
     
-    owner_id = -abs(group_id)
-    
     # Получаем последние посты
-    posts = get_wall_posts(group_id, POSTS_TO_CHECK)
+    posts = get_wall_posts(owner_id, POSTS_TO_CHECK)
     
     if not posts:
         log("No posts fetched, skipping cycle", 'WARNING')
@@ -374,7 +415,7 @@ def process_comments(group_id: int, group_name: str):
             comment['post_id'] = post_id
             
             # Форматируем и отправляем уведомление
-            message = format_telegram_message(comment, post_url, group_name)
+            message = format_telegram_message(comment, post_url, owner_name)
             
             if send_telegram_message(message):
                 new_comments_count += 1
@@ -433,19 +474,20 @@ def main():
         log("Configuration validation failed. Please check your .env file.", 'ERROR')
         return
     
-    # Преобразуем группу в числовой ID
-    group_id = resolve_vk_group(VK_GROUP_ID)
+    # Преобразуем идентификатор в (owner_id, owner_type, screen_name)
+    owner_id, owner_type, screen_name = resolve_vk_owner(VK_GROUP_ID)
     
-    if not group_id:
-        log(f"Failed to resolve VK group: {VK_GROUP_ID}", 'ERROR')
+    if not owner_id:
+        log(f"Failed to resolve VK owner: {VK_GROUP_ID}", 'ERROR')
         log("Please check VK_GROUP_ID in your .env file.", 'ERROR')
         return
     
-    # Получаем информацию о группе
-    group_info = get_group_info(group_id)
-    group_name = group_info.get('name', 'Unknown Group')
+    # Получаем информацию о владельце
+    owner_info = get_owner_info(owner_id, owner_type)
+    owner_name = owner_info.get('name', 'Unknown Owner')
+    owner_type_ru = 'пользователя' if owner_type == 'user' else 'группы'
     
-    log(f"Monitoring group: {group_name} (ID: {group_id})")
+    log(f"Monitoring {owner_type_ru}: {owner_name} (ID: {owner_id})")
     log(f"Parameters: {POSTS_TO_CHECK} posts × {COMMENTS_PER_POST} comments")
     log(f"Check interval: {CHECK_INTERVAL} seconds")
     log("=" * 60)
@@ -459,7 +501,7 @@ def main():
             log(f"--- Cycle #{cycle_count} ---")
             
             try:
-                process_comments(group_id, group_name)
+                process_comments(owner_id, owner_name)
             except Exception as e:
                 log(f"Error in processing cycle: {e}", 'ERROR')
             
