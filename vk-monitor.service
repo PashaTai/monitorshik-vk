@@ -1,0 +1,25 @@
+[Unit]
+Description=VK Comment Monitor Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/vk-bot
+ExecStart=/usr/bin/python3 /home/ubuntu/vk-bot/monitor.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vk-monitor
+
+# Переменные окружения (опционально, если не используется .env файл)
+# Environment="VK_ACCESS_TOKEN=your_token"
+# Environment="VK_GROUP_ID=your_group_id"
+# Environment="TELEGRAM_BOT_TOKEN=your_bot_token"
+# Environment="TELEGRAM_CHAT_ID=your_chat_id"
+
+[Install]
+WantedBy=multi-user.target
+
