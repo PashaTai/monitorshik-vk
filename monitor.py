@@ -9,7 +9,7 @@ VK Comment Monitor - мониторинг комментариев в публи
 import os
 import time
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import requests
 from dotenv import load_dotenv
@@ -249,17 +249,23 @@ def format_telegram_message(comment: Dict, post_url: str, owner_name: str) -> st
         last_name = author_info.get('last_name', 'User')
         author_name = f"{first_name} {last_name}"
         author_url = f"https://vk.com/id{from_id}"
+        author_id = from_id
     else:  # Группа/сообщество
         author_name = author_info.get('name', 'Unknown Group')
         author_url = f"https://vk.com/club{abs(from_id)}"
+        author_id = abs(from_id)
     
-    # Время комментария (timestamp в секундах)
+    # Время комментария (timestamp в секундах) - МОСКОВСКОЕ ВРЕМЯ
     timestamp = comment.get('date', 0)
-    dt = datetime.fromtimestamp(timestamp)
+    dt = datetime.fromtimestamp(timestamp) + timedelta(hours=3)  # +3 часа для московского времени
     time_str = dt.strftime('%H:%M %d.%m.%Y')
     
     # Текст комментария
-    text = comment.get('text', '[без текста]')
+    text = comment.get('text', '').strip()
+    
+    # Проверка на наличие медиафайлов
+    attachments = comment.get('attachments', [])
+    has_media = len(attachments) > 0
     
     # ID комментария для прямой ссылки
     comment_id = comment.get('id')
@@ -267,18 +273,29 @@ def format_telegram_message(comment: Dict, post_url: str, owner_name: str) -> st
     post_id = comment.get('post_id')
     comment_url = f"https://vk.com/wall{owner_id}_{post_id}?reply={comment_id}"
     
-    # Формируем сообщение
-    message = f"""💬 <b>Новый комментарий на странице {owner_name}</b>
-
-📄 <b>Пост:</b> <a href="{post_url}">перейти к посту</a>
-👤 <b>Автор:</b> <a href="{author_url}">{author_name}</a>
-🕐 <b>Время:</b> {time_str}
+    # Формируем сообщение в зависимости от наличия текста
+    if text:
+        # Стандартный формат с текстом
+        message = f"""🔵 <b>VK</b> | {owner_name}
+👤 <a href="{author_url}">{author_name}</a>
+🆔 <code>{author_id}</code>
+🕐 {time_str}
 ━━━━━━━━━━━━━━━━━━
+<blockquote>{text}</blockquote>
 
-💭 <b>Комментарий:</b>
-{text}
+<a href="{post_url}">🔗 Открыть пост</a>
+<a href="{comment_url}">💬 Открыть комментарий</a>"""
+    else:
+        # Альтернативный формат для медиафайлов
+        message = f"""🔵 <b>VK</b> | {owner_name}
+👤 <a href="{author_url}">{author_name}</a>
+🆔 <code>{author_id}</code>
+🕐 {time_str}
+━━━━━━━━━━━━━━━━━━
+<b>Пользователь прислал медиафайл, пожалуйста откройте комментарий чтобы увидеть содержание</b>
 
-🔗 <a href="{comment_url}">Перейти к комментарию</a>"""
+<a href="{post_url}">🔗 Открыть пост</a>
+<a href="{comment_url}">💬 Открыть комментарий</a>"""
     
     return message
 
